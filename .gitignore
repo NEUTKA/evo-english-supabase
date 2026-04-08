@@ -30,7 +30,8 @@ build/
 
 # Supabase
 supabase/.branches
-supabase/.temp
+supabase/.temp/
+supabase/.temp/**
 
 # Secrets and keys
 *.key
