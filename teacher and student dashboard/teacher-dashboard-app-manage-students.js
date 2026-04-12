@@ -100,6 +100,49 @@ function escapeHtml(value) {
     }
   }
 
+  function rememberButton(button) {
+    if (!button) return { text: '' };
+    return { text: button.textContent || '' };
+  }
+
+  function paintButton(button, tone, text) {
+    if (!button) return;
+    button.classList.remove('is-busy', 'is-success', 'is-error');
+    if (tone) button.classList.add(`is-${tone}`);
+    if (text != null) button.textContent = text;
+  }
+
+  function startButtonFeedback(button, busyText) {
+    const original = rememberButton(button);
+    if (button) {
+      button.disabled = true;
+      paintButton(button, 'busy', busyText || original.text);
+    }
+    return original;
+  }
+
+  function finishButtonFeedback(button, original, ok, doneText, delay = 1600) {
+    if (!button) return;
+    button.disabled = true;
+    paintButton(button, ok ? 'success' : 'error', doneText);
+
+    window.setTimeout(() => {
+      button.disabled = false;
+      button.classList.remove('is-busy', 'is-success', 'is-error');
+      button.textContent = original?.text || button.textContent;
+    }, delay);
+  }
+
+  function finishButtonFeedbackBySelector(selector, original, ok, doneText, delay = 1600) {
+    const button = rootEl()?.querySelector(selector);
+    if (!button) return;
+    finishButtonFeedback(button, original, ok, doneText, delay);
+  }
+
+  function buttonError(button, original, text) {
+    finishButtonFeedback(button, original || rememberButton(button), false, text || 'Failed');
+  }
+
   function injectStyles() {
     if (document.getElementById('teacher-dashboard-styles')) return;
 
@@ -149,6 +192,9 @@ function escapeHtml(value) {
       .td-btn-secondary{background:#f8fbff;color:#175cd3;border:1px solid #dbe7f3}
       .td-btn-danger{background:#fff2f2;color:#b42318;border:1px solid #fecaca}
       .td-btn:disabled{opacity:.65;cursor:not-allowed}
+      .td-btn.is-busy{opacity:.92;cursor:wait}
+      .td-btn.is-success{background:#22c55e !important;border-color:#22c55e !important;color:#fff !important}
+      .td-btn.is-error{background:#ef4444 !important;border-color:#ef4444 !important;color:#fff !important}
       .td-note{color:#667085;font-size:14px}
       .td-assignment{border:1px solid #e6ebf1;border-radius:14px;padding:16px;background:#fff}
       .td-assignment-top{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}
@@ -326,7 +372,7 @@ function escapeHtml(value) {
     const awaitingReviewCount = assignments.filter((a) => effectiveReviewState(a) === 'awaiting_review').length;
     const teacherName = (teacher.full_name || '').trim() || teacher.email || 'Teacher';
     const teacherEmail = teacher.email || '';
-    const flashHtml = state.flash ? `<div class="${state.flash.type === 'error' ? 'td-error' : 'td-success'}">${escapeHtml(state.flash.message)}</div>` : '';
+    const flashHtml = '';
 
     const studentOptions = students.length
       ? students.map((student) => {
@@ -646,28 +692,25 @@ function escapeHtml(value) {
     const emailEl = form.querySelector('#td-student-email');
     const addBtn = form.querySelector('#td-add-student-btn');
     const email = emailEl?.value.trim() || '';
+    const original = rememberButton(addBtn);
 
     if (!email) {
-      state.flash = { type: 'error', message: 'Please enter a student email.' };
-      renderDashboard();
+      buttonError(addBtn, original, 'Enter email');
       return;
     }
 
-    if (addBtn) addBtn.disabled = true;
+    startButtonFeedback(addBtn, 'Adding...');
 
     try {
       const { error } = await supabase.rpc('teacher_add_student_by_email', { _email: email });
       if (error) throw error;
 
-      state.flash = { type: 'success', message: 'Student added successfully.' };
       await fetchDashboardData();
       renderDashboard();
+      finishButtonFeedbackBySelector('#td-add-student-btn', original, true, 'Added');
     } catch (err) {
       console.error('[teacher-dashboard] add student error:', err);
-      state.flash = { type: 'error', message: err?.message || 'Failed to add student.' };
-      renderDashboard();
-    } finally {
-      if (addBtn) addBtn.disabled = false;
+      buttonError(addBtn, original, 'Failed');
     }
   }
 
@@ -682,21 +725,24 @@ function escapeHtml(value) {
       return;
     }
 
-    button.disabled = true;
+    const original = rememberButton(button);
+    startButtonFeedback(button, 'Detaching...');
 
     try {
       const { error } = await supabase.rpc('teacher_remove_student', { _student_id: studentId });
       if (error) throw error;
 
-      state.flash = { type: 'success', message: 'Student detached successfully.' };
       await fetchDashboardData();
       renderDashboard();
     } catch (err) {
       console.error('[teacher-dashboard] detach student error:', err);
-      state.flash = { type: 'error', message: err?.message || 'Failed to detach student.' };
-      renderDashboard();
-    } finally {
-      button.disabled = false;
+      buttonError(button, original, 'Failed');
+      return;
+    }
+
+    const newButton = rootEl()?.querySelector(`[data-action="detach-student"][data-student-id="${studentId}"]`);
+    if (newButton) {
+      finishButtonFeedback(newButton, original, true, 'Detached');
     }
   }
 
@@ -709,20 +755,19 @@ function escapeHtml(value) {
     const description = form.querySelector('#td-description')?.value.trim() || '';
     const dueDateRaw = form.querySelector('#td-due-date')?.value || '';
     const miroLink = form.querySelector('#td-miro-link')?.value.trim() || '';
+    const original = rememberButton(submitBtn);
 
     if (!studentId) {
-      state.flash = { type: 'error', message: 'Please select a student.' };
-      renderDashboard();
+      buttonError(submitBtn, original, 'Choose student');
       return;
     }
 
     if (!title) {
-      state.flash = { type: 'error', message: 'Please enter a title.' };
-      renderDashboard();
+      buttonError(submitBtn, original, 'Enter title');
       return;
     }
 
-    if (submitBtn) submitBtn.disabled = true;
+    startButtonFeedback(submitBtn, 'Creating...');
 
     try {
       const teacherId = state.teacher?.id;
@@ -751,15 +796,12 @@ function escapeHtml(value) {
         });
       if (recipientErr) throw recipientErr;
 
-      state.flash = { type: 'success', message: 'Assignment created successfully.' };
       await fetchDashboardData();
       renderDashboard();
+      finishButtonFeedbackBySelector('#td-submit-btn', original, true, 'Created');
     } catch (err) {
       console.error('[teacher-dashboard] create assignment error:', err);
-      state.flash = { type: 'error', message: err?.message || 'Failed to create assignment.' };
-      renderDashboard();
-    } finally {
-      if (submitBtn) submitBtn.disabled = false;
+      buttonError(submitBtn, original, 'Failed');
     }
   }
 
@@ -768,21 +810,20 @@ function escapeHtml(value) {
     if (!supabase) return;
     const commentEl = card.querySelector('[data-role="comment"]');
     const body = commentEl?.value.trim() || '';
+    const original = rememberButton(button);
 
     if (!body) {
-      state.flash = { type: 'error', message: 'Please enter a comment before sending.' };
-      renderDashboard();
+      buttonError(button, original, 'Write comment');
       return;
     }
 
     const assignment = state.assignments.find((a) => a.id === assignmentId);
     if (!assignment?.student_id) {
-      state.flash = { type: 'error', message: 'Student was not found for this assignment.' };
-      renderDashboard();
+      buttonError(button, original, 'No student');
       return;
     }
 
-    if (button) button.disabled = true;
+    startButtonFeedback(button, 'Sending...');
 
     try {
       const { error } = await supabase.from('assignment_comments').insert({
@@ -794,15 +835,12 @@ function escapeHtml(value) {
       });
       if (error) throw error;
 
-      state.flash = { type: 'success', message: 'Your comment was sent.' };
       await fetchDashboardData();
       renderDashboard();
+      finishButtonFeedbackBySelector(`[data-assignment-id="${assignmentId}"] [data-action="send-comment"]`, original, true, 'Sent');
     } catch (err) {
       console.error('[teacher-dashboard] send comment error:', err);
-      state.flash = { type: 'error', message: err?.message || 'Failed to send comment.' };
-      renderDashboard();
-    } finally {
-      if (button) button.disabled = false;
+      buttonError(button, original, 'Failed');
     }
   }
 
@@ -814,15 +852,15 @@ function escapeHtml(value) {
     const feedbackEl = card.querySelector('[data-role="teacher-feedback"]');
     const reviewedStatus = reviewedEl?.value || 'not_reviewed';
     const teacherFeedback = feedbackEl?.value.trim() || '';
+    const original = rememberButton(button);
 
     const assignment = state.assignments.find((a) => a.id === assignmentId);
     if (!assignment?.student_id) {
-      state.flash = { type: 'error', message: 'Student was not found for this assignment.' };
-      renderDashboard();
+      buttonError(button, original, 'No student');
       return;
     }
 
-    if (button) button.disabled = true;
+    startButtonFeedback(button, 'Saving...');
 
     try {
       const { error } = await supabase
@@ -836,15 +874,12 @@ function escapeHtml(value) {
 
       if (error) throw error;
 
-      state.flash = { type: 'success', message: 'Review was saved successfully.' };
       await fetchDashboardData();
       renderDashboard();
+      finishButtonFeedbackBySelector(`[data-assignment-id="${assignmentId}"] [data-action="save-review"]`, original, true, 'Saved');
     } catch (err) {
       console.error('[teacher-dashboard] save review error:', err);
-      state.flash = { type: 'error', message: err?.message || 'Failed to save review.' };
-      renderDashboard();
-    } finally {
-      if (button) button.disabled = false;
+      buttonError(button, original, 'Failed');
     }
   }
 
@@ -853,14 +888,14 @@ function escapeHtml(value) {
     if (!supabase) return;
     const fileEl = card.querySelector('[data-role="resource-file"]');
     const file = fileEl?.files?.[0] || null;
+    const original = rememberButton(button);
 
     if (!file) {
-      state.flash = { type: 'error', message: 'Please choose a file first.' };
-      renderDashboard();
+      buttonError(button, original, 'Choose file');
       return;
     }
 
-    if (button) button.disabled = true;
+    startButtonFeedback(button, 'Uploading...');
 
     try {
       const safeName = sanitizeFileName(file.name || 'file');
@@ -883,15 +918,12 @@ function escapeHtml(value) {
       });
       if (insertErr) throw insertErr;
 
-      state.flash = { type: 'success', message: 'Reference file uploaded successfully.' };
       await fetchDashboardData();
       renderDashboard();
+      finishButtonFeedbackBySelector(`[data-assignment-id="${assignmentId}"] [data-action="upload-resource"]`, original, true, 'Uploaded');
     } catch (err) {
       console.error('[teacher-dashboard] upload resource error:', err);
-      state.flash = { type: 'error', message: err?.message || 'Failed to upload reference file.' };
-      renderDashboard();
-    } finally {
-      if (button) button.disabled = false;
+      buttonError(button, original, 'Failed');
     }
   }
 
@@ -901,10 +933,14 @@ function escapeHtml(value) {
 
     const resourceId = button.getAttribute('data-resource-id');
     const resourcePath = button.getAttribute('data-resource-path');
+    const assignmentId = button.closest('[data-assignment-id]')?.getAttribute('data-assignment-id');
+    const original = rememberButton(button);
+
     if (!resourceId || !resourcePath) return;
 
     if (!confirm('Remove this reference file?')) return;
-    button.disabled = true;
+
+    startButtonFeedback(button, 'Removing...');
 
     try {
       const { error: storageErr } = await supabase.storage.from(RESOURCES_BUCKET).remove([resourcePath]);
@@ -913,15 +949,14 @@ function escapeHtml(value) {
       const { error: deleteErr } = await supabase.from('assignment_resources').delete().eq('id', resourceId);
       if (deleteErr) throw deleteErr;
 
-      state.flash = { type: 'success', message: 'Reference file removed.' };
       await fetchDashboardData();
       renderDashboard();
+      if (assignmentId) {
+        finishButtonFeedbackBySelector(`[data-assignment-id="${assignmentId}"] [data-action="delete-resource"]`, original, true, 'Removed');
+      }
     } catch (err) {
       console.error('[teacher-dashboard] delete resource error:', err);
-      state.flash = { type: 'error', message: err?.message || 'Failed to remove reference file.' };
-      renderDashboard();
-    } finally {
-      button.disabled = false;
+      buttonError(button, original, 'Failed');
     }
   }
 
