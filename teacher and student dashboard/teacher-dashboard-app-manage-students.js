@@ -142,6 +142,9 @@ function escapeHtml(value) {
   function buttonError(button, original, text) {
     finishButtonFeedback(button, original || rememberButton(button), false, text || 'Failed');
   }
+  function wait(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
 
   function injectStyles() {
     if (document.getElementById('teacher-dashboard-styles')) return;
@@ -372,7 +375,9 @@ function escapeHtml(value) {
     const awaitingReviewCount = assignments.filter((a) => effectiveReviewState(a) === 'awaiting_review').length;
     const teacherName = (teacher.full_name || '').trim() || teacher.email || 'Teacher';
     const teacherEmail = teacher.email || '';
-    const flashHtml = '';
+    const flashHtml = state.flash
+      ? `<div class="${state.flash.type === 'error' ? 'td-error' : 'td-success'}">${escapeHtml(state.flash.message)}</div>`
+      : '';
 
     const studentOptions = students.length
       ? students.map((student) => {
@@ -714,37 +719,35 @@ function escapeHtml(value) {
     }
   }
 
-  async function handleDetachStudent(button) {
-    const supabase = window.supabase;
-    if (!supabase) return;
-    const studentId = button.getAttribute('data-student-id');
-    const studentEmail = button.getAttribute('data-student-email') || 'this student';
-    if (!studentId) return;
+async function handleDetachStudent(button) {
+  const supabase = window.supabase;
+  if (!supabase) return;
 
-    if (!confirm(`Detach ${studentEmail} from your student list? Existing assignments will stay in the system.`)) {
-      return;
-    }
+  const studentId = button.getAttribute('data-student-id');
+  const studentEmail = button.getAttribute('data-student-email') || 'this student';
+  if (!studentId) return;
 
-    const original = rememberButton(button);
-    startButtonFeedback(button, 'Detaching...');
-
-    try {
-      const { error } = await supabase.rpc('teacher_remove_student', { _student_id: studentId });
-      if (error) throw error;
-
-      await fetchDashboardData();
-      renderDashboard();
-    } catch (err) {
-      console.error('[teacher-dashboard] detach student error:', err);
-      buttonError(button, original, 'Failed');
-      return;
-    }
-
-    const newButton = rootEl()?.querySelector(`[data-action="detach-student"][data-student-id="${studentId}"]`);
-    if (newButton) {
-      finishButtonFeedback(newButton, original, true, 'Detached');
-    }
+  if (!confirm(`Detach ${studentEmail} from your student list? Existing assignments will stay in the system.`)) {
+    return;
   }
+
+  const original = rememberButton(button);
+  startButtonFeedback(button, 'Detaching...');
+
+  try {
+    const { error } = await supabase.rpc('teacher_remove_student', { _student_id: studentId });
+    if (error) throw error;
+
+    finishButtonFeedback(button, original, true, 'Detached', 900);
+    await wait(900);
+
+    await fetchDashboardData();
+    renderDashboard();
+  } catch (err) {
+    console.error('[teacher-dashboard] detach student error:', err);
+    buttonError(button, original, 'Failed');
+  }
+}
 
   async function handleCreateAssignment(form) {
     const supabase = window.supabase;
@@ -867,7 +870,9 @@ function escapeHtml(value) {
         .from('assignment_recipients')
         .update({
           teacher_feedback: teacherFeedback || null,
-          reviewed_status: reviewedStatus
+          reviewed_status: reviewedStatus,
+          reviewed_at: reviewedStatus === 'reviewed' ? new Date().toISOString() : null,
+          reviewed_by: reviewedStatus === 'reviewed' ? state.userId : null
         })
         .eq('assignment_id', assignmentId)
         .eq('student_id', assignment.student_id);
@@ -933,27 +938,30 @@ function escapeHtml(value) {
 
     const resourceId = button.getAttribute('data-resource-id');
     const resourcePath = button.getAttribute('data-resource-path');
-    const assignmentId = button.closest('[data-assignment-id]')?.getAttribute('data-assignment-id');
     const original = rememberButton(button);
 
     if (!resourceId || !resourcePath) return;
-
     if (!confirm('Remove this reference file?')) return;
 
     startButtonFeedback(button, 'Removing...');
 
     try {
-      const { error: storageErr } = await supabase.storage.from(RESOURCES_BUCKET).remove([resourcePath]);
+      const { error: storageErr } = await supabase.storage
+        .from(RESOURCES_BUCKET)
+        .remove([resourcePath]);
       if (storageErr) throw storageErr;
 
-      const { error: deleteErr } = await supabase.from('assignment_resources').delete().eq('id', resourceId);
+      const { error: deleteErr } = await supabase
+        .from('assignment_resources')
+        .delete()
+        .eq('id', resourceId);
       if (deleteErr) throw deleteErr;
+
+      finishButtonFeedback(button, original, true, 'Removed', 900);
+      await wait(900);
 
       await fetchDashboardData();
       renderDashboard();
-      if (assignmentId) {
-        finishButtonFeedbackBySelector(`[data-assignment-id="${assignmentId}"] [data-action="delete-resource"]`, original, true, 'Removed');
-      }
     } catch (err) {
       console.error('[teacher-dashboard] delete resource error:', err);
       buttonError(button, original, 'Failed');
