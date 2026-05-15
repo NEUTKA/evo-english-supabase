@@ -27,6 +27,100 @@ function htmlPage(content: string, status = 200) {
   });
 }
 
+function escapeHtml(value: unknown) {
+  return String(value ?? "").replace(/[&<>"']/g, (char) => {
+    const map: Record<string, string> = {
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;",
+    };
+
+    return map[char] || char;
+  });
+}
+
+function cleanRole(value: unknown) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function roleFromPayload(payload: any) {
+  return cleanRole(
+    payload?.role ||
+      payload?.account_role ||
+      payload?.profile_role ||
+      payload?.user_role ||
+      payload?.metadata?.role ||
+      payload?.user_metadata?.role ||
+      payload?.record?.role ||
+      payload?.record?.raw_user_meta_data?.role ||
+      ""
+  );
+}
+
+async function readFirstRestRow<T>(path: string): Promise<T | null> {
+  const res = await supabaseRest(path);
+  if (!res.ok) return null;
+
+  const data = (await res.json().catch(() => null)) as T[] | null;
+  return Array.isArray(data) && data.length ? data[0] : null;
+}
+
+async function getAdminSignupInfo(payload: any, userId: string, userEmail: string) {
+  type ProfileRow = {
+    id?: string;
+    email?: string;
+    full_name?: string | null;
+    role?: string | null;
+  };
+
+  type TeacherSubscriptionRow = {
+    status?: string | null;
+    trial_started_at?: string | null;
+    trial_ends_at?: string | null;
+  };
+
+  let profile: ProfileRow | null = null;
+  let teacherSubscription: TeacherSubscriptionRow | null = null;
+  let role = roleFromPayload(payload);
+
+  if (userId) {
+    profile = await readFirstRestRow<ProfileRow>(
+      `profiles?select=id,email,full_name,role&id=eq.${encodeURIComponent(userId)}&limit=1`
+    );
+
+    teacherSubscription = await readFirstRestRow<TeacherSubscriptionRow>(
+      `teacher_subscriptions?select=status,trial_started_at,trial_ends_at&teacher_id=eq.${encodeURIComponent(userId)}&limit=1`
+    );
+  }
+
+  if (!profile && userEmail) {
+    profile = await readFirstRestRow<ProfileRow>(
+      `profiles?select=id,email,full_name,role&email=eq.${encodeURIComponent(userEmail)}&limit=1`
+    );
+  }
+
+  if (profile?.role) role = cleanRole(profile.role);
+
+  const isTeacher = role === "teacher" || !!teacherSubscription;
+  const accountLabel = isTeacher
+    ? "teacher-account"
+    : role === "student"
+      ? "student-account"
+      : role === "self_study"
+        ? "self-study-account"
+        : "user-account";
+
+  return {
+    role,
+    accountLabel,
+    isTeacher,
+    profile,
+    teacherSubscription,
+  };
+}
+
 function pickNudge(days: number, continueUrl: string) {
   const safeUrl = continueUrl?.startsWith("http")
     ? continueUrl
@@ -460,20 +554,34 @@ serve(async (req) => {
     const userId = String(payload.user_id || "");
     const userEmail = String(payload.user_email || "");
     const createdAt = String(payload.created_at || "");
-    const subject = `New signup: ${userEmail || userId}`;
+    const info = await getAdminSignupInfo(payload, userId, userEmail);
+    const subjectPrefix = info.isTeacher ? "[teacher-account] " : "";
+    const subject = `${subjectPrefix}New signup: ${userEmail || userId}`;
+    const teacherTrial = info.teacherSubscription?.trial_ends_at
+      ? `<p><b>Teacher trial ends:</b> ${escapeHtml(info.teacherSubscription.trial_ends_at)}</p>`
+      : "";
 
     const html = `<div style="font-family:system-ui;line-height:1.55">
       <h2 style="margin:0 0 10px">New registration</h2>
-      <p><b>Email:</b> ${userEmail || "—"}</p>
-      <p><b>User ID:</b> ${userId || "—"}</p>
-      <p><b>Created:</b> ${createdAt || "—"}</p>
+      <p style="margin:0 0 14px">
+        <span style="display:inline-block;background:${info.isTeacher ? "#111827" : "#eff6ff"};color:${info.isTeacher ? "#ffffff" : "#1d4ed8"};border-radius:999px;padding:7px 12px;font-weight:800">
+          ${escapeHtml(info.accountLabel)}
+        </span>
+      </p>
+      <p><b>Email:</b> ${escapeHtml(userEmail || "—")}</p>
+      <p><b>User ID:</b> ${escapeHtml(userId || "—")}</p>
+      <p><b>Role:</b> ${escapeHtml(info.role || "unknown")}</p>
+      <p><b>Created:</b> ${escapeHtml(createdAt || "—")}</p>
+      ${teacherTrial}
     </div>`;
+
+    const textLabel = info.isTeacher ? "teacher-account" : info.accountLabel;
 
     const res = await sendResendEmail({
       to: ADMIN_NOTIFY_EMAIL,
       subject,
       html,
-      text: `New registration: ${userEmail} (id: ${userId}) created: ${createdAt}`,
+      text: `[${textLabel}] New registration: ${userEmail} (id: ${userId}) role: ${info.role || "unknown"} created: ${createdAt}`,
       idempotencyKey: `admin_signup:${userId}:${createdAt}`,
     });
 
